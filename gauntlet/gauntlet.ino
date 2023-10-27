@@ -9,7 +9,8 @@
 Adafruit_seesaw ss;
 
 //#define DEBUG_SCREEN
-#define DEBUG_CONTROLS
+#define DEBUG_TRACK
+//#define DEBUG_CONTROLS
 //#define DEBUG_XY_COLOR
 
 // Joy Featherwing registers
@@ -240,14 +241,18 @@ void show_screen(void) {
   matrix.show();
 }
 
+int offset_max = 0;
 void add_track(int offset) {
   uint16_t track_arr[] = {
     COLOR_WALL, COLOR_WALL, COLOR_WALL, COLOR_WALL,
+    COLOR_WALL, COLOR_WALL, COLOR_WALL, COLOR_WALL,
     COLOR_BLACK, COLOR_BLACK, COLOR_BLACK, COLOR_BLACK, COLOR_BLACK, 
+    COLOR_WALL, COLOR_WALL, COLOR_WALL, COLOR_WALL,
     COLOR_WALL, COLOR_WALL, COLOR_WALL, COLOR_WALL,
   };
   int old_y, new_y;
   int dot_x;
+  int track_count, track_mid, track_idx;
 
   // shift world contents toward bottom of screen (y=0)
   for (old_y = 1; old_y < SCREEN_HEIGHT; old_y++) {
@@ -259,10 +264,29 @@ void add_track(int offset) {
 
   // add new row at top of screen (SCREEN_HEIGHT-1)
   new_y = SCREEN_HEIGHT-1;
-  for (dot_x = 0; dot_x < SCREEN_WIDTH; dot_x++) {
-    screen_dots[dot_x][new_y] = track_arr[dot_x + offset];
+  track_count = sizeof(track_arr) / sizeof(track_arr[0]);
+  track_mid = track_count / 2;
+  if (offset_max == 0) {
+    offset_max = track_mid-1;
   }
 #ifdef DEBUG_SCREEN
+  Serial.print("track_mid: ");
+  Serial.print(track_mid);
+  Serial.print(", track_count: ");
+  Serial.print(track_count);
+  Serial.print(", track_idx: ");
+#endif
+  for (dot_x = 0; dot_x < SCREEN_WIDTH; dot_x++) {
+    //track_idx = dot_x + track_mid - SCREEN_WIDTH/2 + offset;
+    track_idx = dot_x + offset;
+    screen_dots[dot_x][new_y] = track_arr[track_idx];
+#ifdef DEBUG_SCREEN
+    Serial.print(track_idx);
+    Serial.print(", ");
+#endif
+  }
+#ifdef DEBUG_SCREEN
+  Serial.println();
   print_screen();
 #endif
 }
@@ -318,7 +342,7 @@ void setup() {
     }
   }
   for (init_y = 0; init_y < SCREEN_HEIGHT; init_y++) {
-    add_track(0);
+    add_track(4); // start with straight track
   }
   screen_dots[player_x][player_y] = COLOR_PLAYER;
 #ifdef DEBUG_SCREEN
@@ -340,10 +364,13 @@ bool last_right = false;
 bool last_up = false;
 bool last_down = false;
 bool last_sel = false;
+int track_offset = offset_max/2;
+int delay_count = 0; // increment every 10ms. when it reaches delay_track, advance the track.
+int delay_track = 15; // start slow
 
 void loop() {
-  int x = ss.analogRead(2);
-  int y = ss.analogRead(3);
+  int joy_x = ss.analogRead(2);
+  int joy_y = ss.analogRead(3);
   int draw_x, draw_y;
   uint16_t draw_color;
   
@@ -361,26 +388,44 @@ void loop() {
   bool btn_down = false;
   bool btn_sel = false;
   int move_x = 0, move_y = 0;
+
+  delay_count++;
+  if (delay_count >= delay_track) {
+    track_offset = track_offset + random(-1,2);
+    if (track_offset < 0) {
+      track_offset = 0;
+    }
+    if (track_offset > offset_max) {
+      track_offset = offset_max;
+    }
+    // erase where thc player was
+    screen_dots[player_x][player_y] = COLOR_BLACK;
+    add_track (track_offset); // shift everything up, add 1 row at bottom
+    // show player again
+    screen_dots[player_x][player_y] = COLOR_PLAYER;
+    show_screen();
+    delay_count = 0;
+  }
   
-  if ( (abs(x - last_x) > 3)  ||  (abs(y - last_y) > 3)) {
+  if ( (abs(joy_x - last_x) > 3)  ||  (abs(joy_y - last_y) > 3)) {
 #ifdef DEBUG_CONTROLS
-    Serial.print(x); Serial.print(", "); Serial.println(y);
+    Serial.print(joy_x); Serial.print(", "); Serial.println(joy_y);
 #endif
-    if (x > last_x) {
-      btn_right = true;
-    }
-    if (x < last_x) {
-      btn_left = true;
-    }
-    if (y > last_y) {
+    if (joy_x > last_x) {
       btn_up = true;
     }
-    if (y < last_y) {
+    if (joy_x < last_x) {
       btn_down = true;
     }
+    if (joy_y > last_y) {
+      btn_right = true;
+    }
+    if (joy_y < last_y) {
+      btn_left = true;
+    }
 
-    last_x = x;
-    last_y = y;
+    last_x = joy_x;
+    last_y = joy_y;
   }
   
   /* if(!digitalRead(IRQ_PIN)) {  // Uncomment to use IRQ */
