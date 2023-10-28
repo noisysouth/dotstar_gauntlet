@@ -9,7 +9,7 @@
 Adafruit_seesaw ss;
 
 //#define DEBUG_SCREEN
-#define DEBUG_TRACK
+//#define DEBUG_TRACK
 //#define DEBUG_CONTROLS
 //#define DEBUG_XY_COLOR
 
@@ -121,6 +121,8 @@ Adafruit_DotStarMatrix matrix = Adafruit_DotStarMatrix(
 #define COLOR_WHITE   (matrix.Color(255, 255, 255))
 #define COLOR_WALL    COLOR_RED //(matrix.Color( 32,   8,   0)) // 0x200800 must not have any blue, must have red
 #define COLOR_PLAYER  COLOR_GREEN
+#define COLOR_PELLET  COLOR_BLUE
+#define COLOR_EXPLOSION COLOR_YELLOW
 #define COLOR_MULTI   (matrix.Color(  0,   0,   1)) // special value: use value near black
 #define COLOR_SPARKLE (matrix.Color(100, 100, 100)) // special value
 
@@ -241,6 +243,7 @@ void show_screen(void) {
   matrix.show();
 }
 
+#define TRACK_START 4
 int offset_max = 0;
 void add_track(int offset) {
   uint16_t track_arr[] = {
@@ -269,7 +272,7 @@ void add_track(int offset) {
   if (offset_max == 0) {
     offset_max = track_mid-1;
   }
-#ifdef DEBUG_SCREEN
+#ifdef DEBUG_TRACK
   Serial.print("track_mid: ");
   Serial.print(track_mid);
   Serial.print(", track_count: ");
@@ -280,23 +283,51 @@ void add_track(int offset) {
     //track_idx = dot_x + track_mid - SCREEN_WIDTH/2 + offset;
     track_idx = dot_x + offset;
     screen_dots[dot_x][new_y] = track_arr[track_idx];
-#ifdef DEBUG_SCREEN
+#ifdef DEBUG_TRACK
     Serial.print(track_idx);
     Serial.print(", ");
 #endif
   }
-#ifdef DEBUG_SCREEN
+#ifdef DEBUG_TRACK
   Serial.println();
+#endif
+#ifdef DEBUG_SCREEN
   print_screen();
 #endif
 }
 
 int player_x = SCREEN_WIDTH/2, player_y = SCREEN_HEIGHT/2; // start in center
 //int player_x = 0, player_y = 0; // start in corner (for test)
+int track_offset = TRACK_START;
+int player_pellets = 0;
+bool player_dead = false;
+
+void start_game(void) {
+  int init_x, init_y;
+
+  for (init_x = 0; init_x < SCREEN_WIDTH; init_x++) {
+    for (init_y = 0; init_y < SCREEN_HEIGHT; init_y++) {
+      screen_dots[init_x][init_y] = COLOR_BLACK;
+    }
+  }
+  for (init_y = 0; init_y < SCREEN_HEIGHT; init_y++) {
+    add_track(TRACK_START); // start with straight track
+  }
+  screen_dots[player_x][player_y] = COLOR_PLAYER;
+#ifdef DEBUG_SCREEN
+  print_screen();
+#endif
+  show_screen();
+
+  player_pellets = 0;
+  player_dead = false;
+  player_x = SCREEN_WIDTH/2;
+  player_y = SCREEN_HEIGHT/2; // start in center
+  track_offset = TRACK_START;
+}
 
 void setup() {
-  int init_x, init_y;
-#if defined DEBUG_SCREEN || defined DEBUG_CONTROLS || defined DEBUG_SCREEN
+#if defined DEBUG_SCREEN || defined DEBUG_CONTROLS || defined DEBUG_TRACK
   Serial.begin(115200);
 
   while(!Serial) {
@@ -336,18 +367,21 @@ void setup() {
   }
   matrix.fillScreen(0);
   matrix.show();
-  for (init_x = 0; init_x < SCREEN_WIDTH; init_x++) {
-    for (init_y = 0; init_y < SCREEN_HEIGHT; init_y++) {
-      screen_dots[init_x][init_y] = COLOR_BLACK;
-    }
+  start_game();
+}
+
+void
+check_player(void) {
+  if (screen_dots[player_x][player_y] == COLOR_PELLET) {
+    player_pellets++;
   }
-  for (init_y = 0; init_y < SCREEN_HEIGHT; init_y++) {
-    add_track(4); // start with straight track
+  if (screen_dots[player_x][player_y] == COLOR_WALL) {
+    screen_dots[player_x][player_y] = COLOR_EXPLOSION;
+    player_dead = true;
+  } else {
+    // show player again
+    screen_dots[player_x][player_y] = COLOR_PLAYER;
   }
-  screen_dots[player_x][player_y] = COLOR_PLAYER;
-#ifdef DEBUG_SCREEN
-  print_screen();
-#endif
   show_screen();
 }
 
@@ -364,9 +398,10 @@ bool last_right = false;
 bool last_up = false;
 bool last_down = false;
 bool last_sel = false;
-int track_offset = offset_max/2;
-int delay_count = 0; // increment every 10ms. when it reaches delay_track, advance the track.
-int delay_track = 15; // start slow
+int track_count = 0; // increment every 10ms. when it reaches track_delay, advance the track.
+int track_delay = 15; // start slow
+int pellet_count = 0; // increment every 10ms. when it reaches pellet_delay, possibly add pellet.
+int pellet_delay = 15;
 
 void loop() {
   int joy_x = ss.analogRead(2);
@@ -389,8 +424,16 @@ void loop() {
   bool btn_sel = false;
   int move_x = 0, move_y = 0;
 
-  delay_count++;
-  if (delay_count >= delay_track) {
+  if (player_dead) {
+    matrix.fillScreen(0);
+    matrix.print(player_pellets);
+    delay(1000);
+    start_game();
+    return;
+  }
+
+  track_count++;
+  if (track_count >= track_delay) {
     track_offset = track_offset + random(-1,2);
     if (track_offset < 0) {
       track_offset = 0;
@@ -398,15 +441,33 @@ void loop() {
     if (track_offset > offset_max) {
       track_offset = offset_max;
     }
-    // erase where thc player was
+    // erase where the player was
     screen_dots[player_x][player_y] = COLOR_BLACK;
     add_track (track_offset); // shift everything up, add 1 row at bottom
-    // show player again
-    screen_dots[player_x][player_y] = COLOR_PLAYER;
-    show_screen();
-    delay_count = 0;
+    check_player();
+    if (player_dead) {
+      delay(10);
+      return;
+    }
+    track_count = 0;
   }
-  
+
+  pellet_count++;
+  if (pellet_count >= pellet_delay) {
+    int pellet_rand;
+
+    pellet_rand = random(1,20);
+    if (pellet_rand == 1) {
+      int pellet_x, pellet_y;
+
+      // add new pellet at top of screen (SCREEN_HEIGHT-1)
+      pellet_x = random(8,12) - track_offset; // place in black part of track
+      pellet_y = SCREEN_HEIGHT-1;
+      screen_dots[pellet_x][pellet_y] = COLOR_PELLET;
+    }
+    pellet_count = 0;
+  }
+
   if ( (abs(joy_x - last_x) > 3)  ||  (abs(joy_y - last_y) > 3)) {
 #ifdef DEBUG_CONTROLS
     Serial.print(joy_x); Serial.print(", "); Serial.println(joy_y);
@@ -487,8 +548,11 @@ void loop() {
       player_y = SCREEN_HEIGHT-1;
     }
     if (move_x != 0 || move_y != 0) { // player is moving
-      screen_dots[player_x][player_y] = COLOR_PLAYER;
-      show_screen();
+      check_player();
+      if (player_dead) {
+        delay(10);
+        return;
+      }
 #ifdef DEBUG_SCREEN
       print_screen();
 #endif
