@@ -12,19 +12,14 @@ Adafruit_seesaw ss;
 //#define DEBUG_TRACK
 //#define DEBUG_CONTROLS
 //#define DEBUG_XY_COLOR
+//#define DEBUG_DEATH
+//#define DEBUG_FASTER
 
-// Joy Featherwing registers
-// with joystick on right
-//#define BUTTON_RIGHT 6
-//#define BUTTON_DOWN  7
-//#define BUTTON_LEFT  9
-//#define BUTTON_UP    10
-// with joystick on left (upside-down)
+// Joy Featherwing registers, with joystick on left (upside-down)
 #define BUTTON_UP    7
 #define BUTTON_DOWN  10
 #define BUTTON_LEFT  9
 #define BUTTON_RIGHT 6
-// for both
 #define BUTTON_SEL   14
 uint32_t button_mask = (1 << BUTTON_RIGHT) | (1 << BUTTON_DOWN) | 
                 (1 << BUTTON_LEFT) | (1 << BUTTON_UP) | (1 << BUTTON_SEL);
@@ -186,7 +181,6 @@ void print_screen(void) {
     Serial.print(": ");
     for (print_x = 0; print_x < SCREEN_WIDTH; print_x++) {
       dot_color = screen_dots[print_x][print_y];
-      //print_int(dot_color);
       print_hex(dot_color);
       Serial.print(" ");
     }
@@ -297,10 +291,21 @@ void add_track(int offset) {
 }
 
 int player_x = SCREEN_WIDTH/2, player_y = SCREEN_HEIGHT/2; // start in center
-//int player_x = 0, player_y = 0; // start in corner (for test)
 int track_offset = TRACK_START;
 int player_pellets = 0;
 bool player_dead = false;
+
+// start with first character and shift them left (-x) to see more
+int x_start = matrix.width();
+int x_shift = x_start; // start at position for doing -1 (move to the left) direction.
+int track_count = 0; // increment every 10ms. when it reaches track_delay, advance the track.
+int track_delay = 15; // start slow
+int faster_count = 0; // increment every time track_count reaches track_delay. when it reaches faster_delay, speed up.
+int faster_delay = 100;
+int pellet_count = 0; // increment every 10ms. when it reaches pellet_delay, possibly add pellet.
+int pellet_delay = 15;
+int death_count = 0; // increment every 100ms. when it reaches death_delay, stop death animation.
+int death_delay = 20;
 
 void start_game(void) {
   int init_x, init_y;
@@ -310,20 +315,28 @@ void start_game(void) {
       screen_dots[init_x][init_y] = COLOR_BLACK;
     }
   }
-  for (init_y = 0; init_y < SCREEN_HEIGHT; init_y++) {
-    add_track(TRACK_START); // start with straight track
-  }
-  screen_dots[player_x][player_y] = COLOR_PLAYER;
-#ifdef DEBUG_SCREEN
-  print_screen();
-#endif
-  show_screen();
 
   player_pellets = 0;
   player_dead = false;
   player_x = SCREEN_WIDTH/2;
   player_y = SCREEN_HEIGHT/2; // start in center
   track_offset = TRACK_START;
+  track_count = 0;
+  track_delay = 15; // reset speed to slow
+  pellet_count = 10; // start about to maybe do a pellet
+  pellet_delay = 15; // reset possible pellet frequency to 150msec
+  faster_count = 0; // reset speeding up wait timer
+  death_count = 0; // reset death animation
+  x_shift = x_start; // reset death scrolling text
+  
+  for (init_y = 0; init_y < SCREEN_HEIGHT; init_y++) {
+    add_track(track_offset); // start with straight track
+  }
+  screen_dots[player_x][player_y] = COLOR_PLAYER;
+#ifdef DEBUG_SCREEN
+  print_screen();
+#endif
+  show_screen();
 }
 
 void setup() {
@@ -385,23 +398,12 @@ check_player(void) {
   show_screen();
 }
 
-int x_start = matrix.width();
-//int shift_dir = -1; // start with first character and shift them left (-x) to see more
-                  // 1: start with last character and shift them right, +x, to see more.
-                  //  (better w/ short messages, b/c we don't read that way.)
-int x_shift = x_start; // start at position for doing -1 (move to the left) direction.
-
 int last_x = 0, last_y = 0;
-//uint32_t last_buttons = 0;
 bool last_left = false;
 bool last_right = false;
 bool last_up = false;
 bool last_down = false;
 bool last_sel = false;
-int track_count = 0; // increment every 10ms. when it reaches track_delay, advance the track.
-int track_delay = 15; // start slow
-int pellet_count = 0; // increment every 10ms. when it reaches pellet_delay, possibly add pellet.
-int pellet_delay = 15;
 
 void loop() {
   int joy_x = ss.analogRead(2);
@@ -409,14 +411,6 @@ void loop() {
   int draw_x, draw_y;
   uint16_t draw_color;
   
-  matrix.setCursor(x_shift, 5);
-  matrix.setTextColor(COLOR_GREEN);
-  //matrix.setPixelColor(player_x, 0/*red*/, 10/*green*/, 0/*blue*/);
-  //matrix.fillScreen(0);
-  //set_xy_color (player_x, player_y, COLOR_PLAYER);
-  //matrix.setPixelColor(xy_to_idx(player_x, player_y), 0/*red*/, 255/*green*/, 0/*blue*/);
-  //matrix.print('A');
-
   bool btn_left = false;
   bool btn_right = false;
   bool btn_up = false;
@@ -425,12 +419,26 @@ void loop() {
   int move_x = 0, move_y = 0;
 
   if (player_dead) {
+    if (death_count == 0) {
+      matrix.setTextColor(COLOR_GREEN);
+#ifdef DEBUG_DEATH
+      Serial.print("player_pellets: ");
+      Serial.println(player_pellets);
+#endif
+    }
     matrix.fillScreen(0);
+    matrix.setCursor(x_shift, 5); // move text position each time thru this loop
     matrix.print(player_pellets);
-    delay(1000);
-    start_game();
+    matrix.show();
+    delay(100);
+    
+    x_shift--; // move text over next time (scroll from off-screen right towards the left, so left-most characters seen first)
+    death_count++;
+    if (death_count >= death_delay) {
+      start_game();
+    }
     return;
-  }
+  } // end if(player_dead)
 
   track_count++;
   if (track_count >= track_delay) {
@@ -448,6 +456,19 @@ void loop() {
     if (player_dead) {
       delay(10);
       return;
+    }
+    faster_count++;
+#ifdef DEBUG_FASTER
+    Serial.print("faster_count: ");
+    Serial.println(faster_count);
+#endif
+    if (faster_count >= faster_delay) {
+      track_delay--;
+#ifdef DEBUG_FASTER
+      Serial.print("track_delay: ");
+      Serial.println(track_delay);
+#endif
+      faster_count = 0;
     }
     track_count = 0;
   }
